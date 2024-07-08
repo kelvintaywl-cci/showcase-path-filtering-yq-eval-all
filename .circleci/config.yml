@@ -4,6 +4,16 @@ orbs:
   pf: circleci/path-filtering@1.0.0
 
 commands:
+  validate_config:
+    parameters:
+      config_file:
+        type: string
+        default: /tmp/generated-config.yml
+    steps:
+      - run:
+          name: Validate config
+          command: circleci config validate << parameters.config_file >>
+          when: always
   debug_error:
     steps:
       - run:
@@ -29,10 +39,9 @@ jobs:
           mapping: |
             .* foobar true .circleci/foobar.yml
       - pf/generate-config
-      - run:
-          name: Validate config
-          command: circleci config validate /tmp/generated-config.yml
+      - validate_config
       - debug_error
+      - validate_config
 workflows:
   setup:
     jobs:
