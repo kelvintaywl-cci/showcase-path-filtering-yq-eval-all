@@ -2,6 +2,7 @@ version: 2.1
 
 orbs:
   pf: circleci/path-filtering@1.0.0
+  cli: circleci/circleci-cli@0.1.9
 
 commands:
   validate_config:
@@ -33,6 +34,7 @@ jobs:
   setup:
     executor: pf/default
     steps:
+      - cli/install
       - checkout
       - pf/set-parameters:
           base-revision: main
