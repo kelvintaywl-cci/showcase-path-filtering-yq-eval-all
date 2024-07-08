@@ -17,6 +17,22 @@ parameters:
     type: boolean
     default: false
 
+executors:
+  cimg-base:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+
+jobs:
+  plan:
+    parameters:
+      plan_filepath:
+        type: string
+    executor: cimg-base
+    steps:
+      - checkout
+      - run: echo "terraform plan -out << parameters.plan_filepath >>"
+
 workflows:
   foobar:
     when: << pipeline.parameters.foobar >>
