@@ -19,13 +19,13 @@ commands:
     steps:
       - run:
           name: debug yq
-          when: on_fail
+          when: always
           command: |
             yq eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
       - run:
           # See https://mikefarah.gitbook.io/yq/operators/anchor-and-alias-operators#explode-with-merge-anchors
           name: show fix with explode
-          when: on_fail
+          when: always
           command: |
             yq eval-all '. as $item ireduce ({}; . * $item ) | explode(.)'  ./.circleci/foobar.yml
 
