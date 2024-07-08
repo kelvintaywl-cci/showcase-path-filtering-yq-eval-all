@@ -3,6 +3,22 @@ version: 2.1
 orbs:
   pf: circleci/path-filtering@1.0.0
 
+commands:
+  debug_error:
+    steps:
+      - run:
+          name: debug yq
+          when: on_fail
+          command: |
+            yq eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
+      - run:
+          # See https://mikefarah.gitbook.io/yq/operators/anchor-and-alias-operators#explode-with-merge-anchors
+          name: show fix with explode
+          when: on_fail
+          command: |
+            yq eval-all '. as $item ireduce ({}; . * $item ) | explode(.)'  ./.circleci/foobar.yml
+
+
 jobs:
   setup:
     executor: pf/default
@@ -16,12 +32,7 @@ jobs:
       - run:
           name: Validate config
           command: circleci config validate /tmp/generated-config.yml
-      - run:
-          name: debug yq
-          when: on_fail
-          command: |
-            yq eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
-
+      - debug_error
 workflows:
   setup:
     jobs:
