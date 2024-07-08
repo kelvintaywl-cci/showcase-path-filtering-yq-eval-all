@@ -1,5 +1,11 @@
 version: 2.1
 
+executors:
+  cimg-base:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+
 jobs:
   plan:
     parameters:
@@ -9,4 +15,3 @@ jobs:
     steps:
       - checkout
       - run: echo "terraform plan -out << parameters.plan_filepath >>"
-  

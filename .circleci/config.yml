@@ -39,6 +39,7 @@ jobs:
       - pf/set-parameters:
           base-revision: main
           mapping: |
+            .* foobar false .circleci/common.yml
             .* foobar true .circleci/foobar.yml
       - pf/generate-config
       - validate_config
