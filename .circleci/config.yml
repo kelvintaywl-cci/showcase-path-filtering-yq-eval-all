@@ -11,7 +11,7 @@ jobs:
       - pf/set-parameters:
           base-revision: main
           mapping: |
-            .* foobar true .circleci/aaa.yml
+            .* foobar true .circleci/foobar.yml
       - pf/generate-config
       - run:
           name: Validate config
@@ -20,7 +20,7 @@ jobs:
           name: debug yq
           when: on_fail
           command: |
-            eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
+            yq eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
 
 workflows:
   setup:
