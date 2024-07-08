@@ -1,0 +1,30 @@
+version: 2.1
+
+# -- <alias>
+
+tag_filter: &tag_filter
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /.*/
+
+## -- </alias>
+
+# define the parameters from the setup config.
+parameters:
+  foobar:
+    type: boolean
+    default: false
+
+workflows:
+  foobar:
+    when: << pipeline.parameters.foobar >>
+    jobs:
+      - plan:
+          plan_filepath: 'main.tfplan'
+      - hold:
+          <<: *tag_filter
+          type: approval
+          requires:
+            - plan

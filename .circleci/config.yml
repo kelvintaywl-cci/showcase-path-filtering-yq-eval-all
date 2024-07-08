@@ -1,0 +1,28 @@
+version: 2.1
+
+orbs:
+  pf: circleci/path-filtering@1.0.0
+
+jobs:
+  setup:
+    executor: pf/default
+    steps:
+      - checkout
+      - pf/set-parameters:
+          base-revision: main
+          mapping: |
+            .* foobar true .circleci/aaa.yml
+      - pf/generate-config
+      - run:
+          name: Validate config
+          command: circleci config validate /tmp/generated-config.yml
+      - run:
+          name: debug yq
+          when: on_fail
+          command: |
+            eval-all '. as $item ireduce ({}; . * $item )'  ./.circleci/foobar.yml
+
+workflows:
+  setup:
+    jobs:
+      - setup
