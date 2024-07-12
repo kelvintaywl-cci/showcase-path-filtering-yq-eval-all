@@ -1,8 +1,402 @@
 version: 2.1
 
 orbs:
-  pf: circleci/path-filtering@1.0.0
   cli: circleci/circleci-cli@0.1.9
+  # copy-pasted directly from `circleci orb source circleci/path-filtering@1.0.0`
+  pf:
+    version: 2.1
+    description: |
+      Continue a pipeline based on paths of changed files. This can be useful in a monorepo setup where one may want to trigger different workflows based on which module(s) in the repo has changed. This orb does not support server at this time.
+    display:
+      home_url: https://circleci.com/docs/2.0/dynamic-config
+      source_url: https://github.com/CircleCI-Public/path-filtering-orb
+    orbs:
+      continuation: circleci/continuation@0.2.0
+    commands:
+      generate-config:
+        description: |
+          Generate config file from the config list.
+        parameters:
+          config-list-path:
+            default: /tmp/filtered-config-list
+            description: |
+              A file path to append config paths. Each path in this file should be relative to the working directory.
+            type: string
+          generated-config-path:
+            default: /tmp/generated-config.yml
+            description: |
+              A file path for the generated config file.
+            type: string
+        steps:
+          - run:
+              command: |
+                #!/usr/bin/env bash
+
+                # GitHub's URL for the latest release, will redirect.
+                GITHUB_BASE_URL="https://github.com/mikefarah/yq"
+                DESTDIR="${DESTDIR:-/usr/local/bin}"
+                VERSION="4.34.1"
+
+                function installYq() {
+                  echo "Checking For yq + CURL"
+                  if command -v curl >/dev/null 2>&1 && ! command -v yq >/dev/null 2>&1; then
+                    echo "Installing yq v${VERSION}"
+
+                    uname -a | grep Darwin > /dev/null 2>&1 && OS='darwin' || OS='linux'
+
+                    RELEASE_URL="${GITHUB_BASE_URL}/releases/download/v${VERSION}/yq_${OS}_amd64.tar.gz"
+
+                    # save the current checkout dir
+                    CHECKOUT_DIR=$(pwd)
+
+                    SCRATCH=$(mktemp -d || mktemp -d -t 'tmp')
+                    cd "$SCRATCH" || exit
+
+                    curl -sL --retry 3 "${RELEASE_URL}" | tar zx
+
+                    echo "Installing to $DESTDIR"
+                    sudo install yq "$DESTDIR"
+
+                    command -v yq >/dev/null 2>&1
+
+                    echo "Installation finished"
+                    # Delete the working directory when the install was successful.
+                    cd "$CHECKOUT_DIR" || exit
+                    rm -r "$SCRATCH"
+                    return $?
+                  else
+                    command -v curl >/dev/null 2>&1 || { echo >&2 "PATH-FILTERING ORB ERROR: CURL is required. Please install."; exit 1; }
+                    command -v yq >/dev/null 2>&1 || { echo >&2 "PATH-FILTERING ORB ERROR: yq is required. Please install"; exit 1; }
+                    return $?
+                  fi
+                }
+
+                function generateConfig() {
+                  echo "Config list ==="
+
+                  cat "${PARAM_CONFIG_LIST_PATH}"
+
+                  echo
+                  echo "Generated YAML ==="
+
+                  touch "${PARAM_GENERATED_CONFIG_PATH}"
+
+                  # shellcheck disable=SC2154,SC2016
+                  < "${PARAM_CONFIG_LIST_PATH}" \
+                  awk 'NF {$1=$1; printf "\"%s\" ", $0}' \
+                  | xargs yq eval-all '. as $item ireduce ({}; . * $item )' \
+                  | tee "${PARAM_GENERATED_CONFIG_PATH}"
+                }
+
+                installYq
+                generateConfig
+              environment:
+                PARAM_CONFIG_LIST_PATH: <<parameters.config-list-path>>
+                PARAM_GENERATED_CONFIG_PATH: <<parameters.generated-config-path>>
+              name: Generate config
+      set-parameters:
+        description: |
+          Generates a set of pipeline parameters from `mapping` at `output-path`. Python is required to run this command.
+        parameters:
+          base-revision:
+            default: main
+            description: |
+              The revision to compare the current one against for the purpose of determining changed files.
+            type: string
+          config-path:
+            default: .circleci/continue_config.yml
+            description: |
+              The location of the config to continue the pipeline with, please note that this parameter will be ignored if the user passes the config file per mapping in the mapping parameter
+            type: string
+          mapping:
+            default: ""
+            description: |
+              Mapping of path regular expressions to pipeline parameters and values. One mapping per line, whitespace-delimited. If duplicate parameter keys are found, the last matching pattern will apply. String values must be double-quoted.
+            type: string
+          output-path:
+            default: /tmp/pipeline-parameters.json
+            description: |
+              Path to save the generated parameters to.
+            type: string
+        steps:
+          - run:
+              command: "#!/bin/bash \nset -e\nset -o pipefail\n\nif [ -f .python-version ]; then\n    # Create a temp directory\n    circleci_temp_dir=\"$(mktemp -d)\"\n    # Move .python-version out of the directory\n    mv .python-version \"$circleci_temp_dir\"/.python-version\nfi\n\ncurl \"https://bootstrap.pypa.io/get-pip.py\" -o \"circleci_get_pip.py\"\npython3 circleci_get_pip.py --user\n\npython3 -m pip install --user virtualenv\n\necho \"Create python virtual environment for path-filtering\"\nvirtualenv path-filtering-venv -p /usr/bin/python3\n\necho \"Activate python virtual environment\"\n# shellcheck source=/dev/null\n. path-filtering-venv/bin/activate\n\necho \"${CREATE_PIPELINE_SCRIPT}\" > circleci_create_parameters_script.py\n\necho \"Creating pipeline parameters\"\npython3 circleci_create_parameters_script.py\n\nif [ -f \"$circleci_temp_dir\"/.python-version ]; then\n    # Move .python-version back\n    mv \"$circleci_temp_dir\"/.python-version .python-version\nfi\n\necho \"Deactivate python virtual environment for path-filtering\"\ndeactivate\n"
+              environment:
+                BASE_REVISION: << parameters.base-revision >>
+                CONFIG_PATH: << parameters.config-path >>
+                CREATE_PIPELINE_SCRIPT: |
+                  import json
+                  import os
+                  import re
+                  import subprocess
+                  from functools import partial
+
+                  def checkout(revision):
+                    """
+                    Helper function for checking out a branch
+
+                    :param revision: The revision to checkout
+                    :type revision: str
+                    """
+                    subprocess.run(
+                      ['git', 'checkout', revision],
+                      check=True
+                    )
+
+                  def merge_base(base, head):
+                    return subprocess.run(
+                      ['git', 'merge-base', base, head],
+                      check=True,
+                      capture_output=True
+                    ).stdout.decode('utf-8').strip()
+
+                  def parent_commit():
+                    return subprocess.run(
+                      ['git', 'rev-parse', 'HEAD~1'],
+                      check=True,
+                      capture_output=True
+                    ).stdout.decode('utf-8').strip()
+
+                  def changed_files(base, head):
+                    return subprocess.run(
+                      ['git', '-c', 'core.quotepath=false', 'diff', '--name-only', base, head],
+                      check=True,
+                      capture_output=True
+                    ).stdout.decode('utf-8').splitlines()
+
+                  filtered_config_list_file = "/tmp/filtered-config-list"
+
+                  def write_filtered_config_list(config_files):
+                    with open(filtered_config_list_file, 'w') as fp:
+                      fp.writelines(config_files)
+
+                  def write_mappings(mappings, output_path):
+                    with open(output_path, 'w') as fp:
+                      fp.write(json.dumps(mappings))
+
+                  def write_parameters_from_mappings(mappings, changes, output_path, config_path):
+                    if not mappings:
+                      raise Exception("Mapping cannot be empty!")
+
+                    if not output_path:
+                      raise Exception("Output-path parameter is not found")
+
+                    element_count = len(mappings[0])
+
+                    # currently the supported format for each of the mapping parameter is either:
+                    # path-regex pipeline-parameter pipeline-parameter-value
+                    # OR
+                    # path-regex pipeline-parameter pipeline-parameter-value config-file
+                    if not (element_count == 3 or element_count == 4):
+                      raise Exception("Invalid mapping length of {}".format(element_count))
+
+                    filtered_mapping = []
+                    filtered_files = set()
+
+                    for m in mappings:
+                      if len(m) != element_count:
+                        raise Exception("Expected {} fields but found {}".format(element_count, len(m)))
+
+                      if element_count == 3:
+                        path, param, param_value = m
+                        config_file = None
+                      else:
+                        path, param, param_value, config_file = m
+
+                      try:
+                        decoded_param_value = json.loads(param_value)
+                      except ValueError:
+                        raise Exception("Cannot parse pipeline value {} from mapping".format(param_value))
+
+                      # type check pipeline parameters - should be one of integer, string, or boolean
+                      if not isinstance(decoded_param_value, (int, str, bool)):
+                        raise Exception("""
+                          Pipeline parameters can only be integer, string or boolean type.
+                          Found {} of type {}
+                          """.format(decoded_param_value, type(decoded_param_value)))
+
+                      regex = re.compile(r'^' + path + r'$')
+                      for change in changes:
+                        if regex.match(change):
+                          filtered_mapping.append([param, decoded_param_value])
+                          if config_file:
+                            filtered_files.add(config_file + "\n")
+                          break
+
+                    if not filtered_mapping:
+                      print("No change detected in the paths defined in the mapping parameter")
+
+                    write_mappings(dict(filtered_mapping), output_path)
+
+                    if not filtered_files:
+                      filtered_files.add(config_path)
+
+                    write_filtered_config_list(filtered_files)
+
+                  def is_mapping_line(line: str) -> bool:
+                    is_empty_line = (line.strip() == "")
+                    is_comment_line = (line.strip().startswith("#"))
+                    return not (is_comment_line or is_empty_line)
+
+                  def create_parameters(output_path, config_path, head, base, mapping):
+                    checkout(base)  # Checkout base revision to make sure it is available for comparison
+                    checkout(head)  # return to head commit
+                    base = merge_base(base, head)
+
+                    if head == base:
+                      try:
+                        # If building on the same branch as BASE_REVISION, we will get the
+                        # current commit as merge base. In that case try to go back to the
+                        # first parent, i.e. the last state of this branch before the
+                        # merge, and use that as the base.
+                        base = parent_commit()
+                      except:
+                        # This can fail if this is the first commit of the repo, so that
+                        # HEAD~1 actually doesn't resolve. In this case we can compare
+                        # against this magic SHA below, which is the empty tree. The diff
+                        # to that is just the first commit as patch.
+                        base = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+                    print('Comparing {}...{}'.format(base, head))
+                    changes = changed_files(base, head)
+
+                    if os.path.exists(mapping):
+                      with open(mapping) as f:
+                        mappings = [
+                          m.split() for m in f.read().splitlines() if is_mapping_line(m)
+                        ]
+                    else:
+                      mappings = [
+                        m.split() for m in
+                        mapping.splitlines() if is_mapping_line(m)
+                      ]
+
+                    write_parameters_from_mappings(mappings, changes, output_path, config_path)
+
+
+                  if __name__ == "__main__":
+                    create_parameters(
+                      os.environ.get('OUTPUT_PATH'),
+                      os.environ.get('CONFIG_PATH'),
+                      os.environ.get('CIRCLE_SHA1'),
+                      os.environ.get('BASE_REVISION'),
+                      os.environ.get('MAPPING')
+                    )
+                MAPPING: << parameters.mapping >>
+                OUTPUT_PATH: << parameters.output-path >>
+              name: Set parameters
+    executors:
+      default:
+        description: |
+          This is a sample executor using Docker and Python.
+        docker:
+          - image: cimg/python:<<parameters.tag>>
+        parameters:
+          tag:
+            default: "3.8"
+            description: |
+              Pick a specific cimg/python image variant: https://hub.docker.com/r/cimg/python/tags
+            type: string
+    jobs:
+      filter:
+        description: |
+          Continues a pipeline in the `setup` state based with static config and a set of pipeline parameters based on the changes in this push.
+          The mapping should be a set of items like so: <path regular expression> <pipeline parameter> <value> Multiple mappings can be supplied on separate lines. If the regular expression matches any file changed between HEAD and the base revision, the pipeline parameter will be set to the supplied value for the setup workflow continuation. This way the continuation config can be filtered to only perform relevant tasks.
+        executor:
+          name: default
+          tag: << parameters.tag >>
+        parameters:
+          base-revision:
+            default: main
+            description: |
+              The revision to compare the current one against for the purpose of determining changed files.
+            type: string
+          circleci_domain:
+            default: circleci.com
+            description: The domain of the CircleCI installation - defaults to circleci.com. (Only necessary for CircleCI Server users)
+            type: string
+          config-path:
+            default: .circleci/continue_config.yml
+            description: |
+              The location of the config to continue the pipeline with, please note that this parameter will be ignored if the user passes the config file per mapping in the mapping parameter
+            type: string
+          mapping:
+            default: ""
+            description: |
+              Mapping of path regular expressions to pipeline parameters and values. If the value is a file, then it will be loaded from the disk. One mapping per line, whitespace-delimited. String values must be double-quoted.
+            type: string
+          output-path:
+            default: /tmp/pipeline-parameters.json
+            description: |
+              Path to save the generated parameters to.
+            type: string
+          resource_class:
+            default: small
+            description: Resource class to use
+            type: string
+          tag:
+            default: "3.8"
+            description: |
+              Pick a specific cimg/python image variant: https://hub.docker.com/r/cimg/python/tags
+            type: string
+          workspace_path:
+            default: ""
+            description: Path to attach the workspace to
+            type: string
+        resource_class: << parameters.resource_class >>
+        steps:
+          - checkout
+          - when:
+              condition:
+                not:
+                  equal:
+                    - ""
+                    - << parameters.workspace_path >>
+              steps:
+                - attach_workspace:
+                    at: << parameters.workspace_path >>
+          - set-parameters:
+              base-revision: << parameters.base-revision >>
+              config-path: << parameters.config-path >>
+              mapping: << parameters.mapping >>
+              output-path: << parameters.output-path >>
+          - generate-config:
+              config-list-path: /tmp/filtered-config-list
+              generated-config-path: /tmp/generated-config.yml
+          - continuation/continue:
+              circleci_domain: << parameters.circleci_domain >>
+              configuration_path: /tmp/generated-config.yml
+              parameters: << parameters.output-path >>
+    examples:
+      path_filtering:
+        description: |
+          Continue a pipeline from the setup phase with supplied configuration and pipeline parameters generated from the files changed.
+        usage:
+          version: "2.1"
+          setup: true
+          orbs:
+            path-filtering: circleci/path-filtering@0.1.7
+          workflows:
+            generate-config:
+              jobs:
+                - path-filtering/filter:
+                    base-revision: main
+                    config-path: .circleci/continue_config.yml
+                    mapping: |
+                      src/.* build-code true
+                      doc/.* build-docs true
+                      src/tests/.* string-parameter "value"
+                - path-filtering/filter:
+                    base-revision: main
+                    config-path: .circleci/continue_config.yml
+                    mapping: |
+                      src/.* build-code true .circleci/build-code-config.yml
+                      doc/.* build-docs true .circleci/build-docs-config.yml
+                - path-filtering/filter:
+                    base-revision: main
+                    config-path: .circleci/continue-config.yml
+                    mapping: .circleci/mapping.conf
+
 
 commands:
   validate_config:
