@@ -1,16 +1,5 @@
 version: 2.1
 
-# -- <alias>
-
-tag_filter: &tag_filter
-  filters:
-    branches:
-      ignore: /.*/
-    tags:
-      only: /.*/
-
-## -- </alias>
-
 # define the parameters from the setup config.
 parameters:
   foobar:
@@ -28,3 +17,14 @@ workflows:
           type: approval
           requires:
             - plan
+
+# -- <alias>
+
+tag_filter: &tag_filter
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /.*/
+
+## -- </alias>
